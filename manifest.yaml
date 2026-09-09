@@ -1,0 +1,162 @@
+name: openchami
+namespace: hpe
+version: 0.2.0
+description: Implements the complete Forge node bring-up contract with OpenCHAMI services plus the firmware and hardware integrations required for coverage of every bring-up step.
+entries:
+  - kind: tool
+    name: discover-nodes
+    description: Discovers the requested node through OpenCHAMI discovery and hardware services.
+    runs:
+      using: executable
+      main: tools/discover-nodes.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node to discover.
+    outputs:
+      - name: node_inventory
+        type: string
+        description: Serialized NodeInventory returned by discovery.
+
+  - kind: tool
+    name: collect-inventory
+    description: Collects the requested hardware inventory snapshot through OpenCHAMI inventory services.
+    runs:
+      using: executable
+      main: tools/collect-inventory.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node being inventoried.
+      - name: inventory_policy_ref
+        type: string
+        required: true
+        description: Reference to the inventory collection policy.
+    outputs:
+      - name: inventory_snapshot
+        type: string
+        description: Serialized InventorySnapshot for the node.
+
+  - kind: tool
+    name: power-node
+    description: Applies the requested power, boot-order, or boot-media action through OpenCHAMI power services.
+    runs:
+      using: executable
+      main: tools/power-node.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node receiving the power action.
+      - name: action
+        type: string
+        required: true
+        description: Requested power action.
+    outputs:
+      - name: power_status
+        type: string
+        description: Serialized PowerStatus after the requested action.
+
+  - kind: tool
+    name: apply-firmware-policy
+    description: Applies the requested policy through the hardware-specific firmware integration required in addition to OpenCHAMI core services.
+    runs:
+      using: executable
+      main: tools/apply-firmware-policy.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node receiving firmware policy.
+      - name: firmware_policy_ref
+        type: string
+        required: true
+        description: Reference to the desired firmware policy.
+    outputs:
+      - name: firmware_status
+        type: string
+        description: Serialized FirmwareStatus after policy reconciliation.
+
+  - kind: tool
+    name: provision-node
+    description: Constructs or selects the requested image and provisions the node through OpenCHAMI image, DHCP, iPXE, and HTTP boot services.
+    runs:
+      using: executable
+      main: tools/provision-node.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable node identity in the NodeProvisionRequest.
+      - name: role
+        type: string
+        required: true
+        description: Node role, one of Management, Service, or Compute.
+      - name: image_ref
+        type: string
+        required: true
+        description: Reference to the operating-system image requested for the node.
+      - name: network_attachment_ref
+        type: string
+        required: true
+        description: Reference to the node management-network attachment.
+    outputs:
+      - name: attempt_id
+        type: string
+        description: Stable identifier of the provisioning attempt.
+      - name: lifecycle_attempt
+        type: string
+        description: Serialized LifecycleAttempt containing attempt_id, node_id, implementation, requested_at, and status.
+
+  - kind: tool
+    name: verify-node
+    description: Detects operating-system readiness and returns the common Forge BootedNodeStatus.
+    runs:
+      using: executable
+      main: tools/verify-node.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node being verified.
+      - name: role
+        type: string
+        required: true
+        description: Requested Management, Service, or Compute role.
+      - name: attempt_id
+        type: string
+        required: true
+        description: Stable provisioning attempt identifier returned by provisioning.
+    outputs:
+      - name: status_json
+        type: string
+        description: Serialized BootedNodeStatus containing node_id, role, management_ip, os_id, firmware_digest, inventory_digest, ready_at, and status_conditions[].
+
+  - kind: tool
+    name: release-node
+    description: Removes the OpenCHAMI boot-script and image assignment for the node, erases the node-scoped disks the policy names, and returns the common Forge BootedNodeStatus showing the node free.
+    runs:
+      using: executable
+      main: tools/release-node.sh
+    inputs:
+      - name: node_id
+        type: string
+        required: true
+        description: Stable identity of the node being returned to the free pool.
+      - name: role
+        type: string
+        required: true
+        description: Management, Service, or Compute role the node was provisioned into.
+      - name: release_policy_ref
+        type: string
+        required: true
+        description: Policy declaring which node-scoped disks and state to erase and which to keep.
+    outputs:
+      - name: release_attempt_id
+        type: string
+        description: Stable identifier for this release attempt, so rerunning the release reconciles the same attempt.
+      - name: status_json
+        type: string
+        description: Serialized BootedNodeStatus showing the node free, with node_id, role, released_at, and status_conditions[].
