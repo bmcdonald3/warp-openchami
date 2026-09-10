@@ -14,6 +14,10 @@ entries:
         type: string
         required: true
         description: Stable identity of the node to discover.
+      - name: master_key
+        type: string
+        required: true
+        description: Master key for Magellan secrets.
     outputs:
       - name: node_inventory
         type: string

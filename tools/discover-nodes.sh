@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
+export MASTER_KEY="${WARP_INPUT_MASTER_KEY}"
 node_id="${WARP_INPUT_NODE_ID}"
+
+cd /root/mcdonald/magellan
 
 # Crawl the specific node and format the output as JSON
 node_inventory=$(magellan crawl "${node_id}" --output-format json)
