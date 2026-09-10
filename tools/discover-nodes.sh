@@ -7,7 +7,7 @@ node_id="${WARP_INPUT_NODE_ID}"
 cd /root/mcdonald/magellan
 
 # Crawl the specific node and format the output as JSON
-node_inventory=$(magellan crawl "${node_id}" --output-format json)
+node_inventory=$(magellan crawl "${node_id}" -i --output-format json)
 
 if [ -n "${WARP_OUTPUT:-}" ]; then
   # Heredoc format is used to handle multi-line JSON output safely
