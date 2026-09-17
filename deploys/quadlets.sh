@@ -1,7 +1,7 @@
 #!/bin/bash
 # deploy_openchami_island.sh
 
-dnf install -y podman jq
+apt-get update && apt-get install -y podman jq
 
 mkdir -p /etc/containers/systemd/
 
@@ -115,9 +115,9 @@ EOF
 
 # 8. Reload systemd and start services
 systemctl daemon-reload
-systemctl enable --now ochami-postgres.service
-systemctl enable --now ochami-tokensmith.service
-systemctl enable --now ochami-smd.service
-systemctl enable --now ochami-pcs.service
-systemctl enable --now ochami-boot-service.service
-systemctl enable --now ochami-metadata-service.service
+systemctl start ochami-postgres.service
+systemctl start ochami-tokensmith.service
+systemctl start ochami-smd.service
+systemctl start ochami-pcs.service
+systemctl start ochami-boot-service.service
+systemctl start ochami-metadata-service.service
