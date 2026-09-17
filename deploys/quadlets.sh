@@ -61,7 +61,7 @@ EOF
 
 # Step 5: Start Dependencies
 sudo systemctl daemon-reload
-sudo systemctl enable --now registry.service
+sudo systemctl start registry.service
 sudo systemctl enable --now versitygw-gensecrets.service
 sudo systemctl start versitygw.service
 sudo systemctl enable --now versitygw-bootstrap.service
