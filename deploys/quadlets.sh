@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# OpenCHAMI Island Bootstrap Script
+# OpenCHAMI Island Bootstrap Script (SLES 15 SP6)
 # ==========================================
 
 # Variables - Modify these to match your hardware environment
@@ -15,6 +15,10 @@ OCI_DATA_DIR="/data/oci"
 
 echo "Configuring environment for ${CLUSTER_DOMAIN} on ${ISLAND_INTERFACE} (${HEAD_NODE_IP})..."
 
+# 0. Install foundational requirements for SLES
+echo "Installing prerequisites (podman, jq, curl)..."
+sudo zypper --non-interactive install podman jq curl
+
 # 1. Update Hosts File for Certificate Trust
 if ! grep -q "${CLUSTER_DOMAIN}" /etc/hosts; then
     echo "${HEAD_NODE_IP} ${CLUSTER_DOMAIN}" | sudo tee -a /etc/hosts > /dev/null
@@ -26,9 +30,10 @@ sudo chown -R $USER: ${OCI_DATA_DIR}
 
 # 3. Install VersityGW (S3 Dependency for Boot Images)
 echo "Installing Versity S3 Gateway..."
-LATEST_VERSITY_URL=$(curl -s https://api.github.com/repos/openchami/versitygw-quadlet/releases/latest | jq -r '.assets[] | select(.name | endswith("'"$(rpm --eval '%dist')"'.noarch.rpm")) | .browser_download_url')
+# Fetch the generic/EL9 rpm by removing the dist check
+LATEST_VERSITY_URL=$(curl -s https://api.github.com/repos/openchami/versitygw-quadlet/releases/latest | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${LATEST_VERSITY_URL}" -o versitygw.rpm
-sudo dnf install -y ./versitygw.rpm
+sudo zypper --non-interactive --no-gpg-checks install ./versitygw.rpm
 
 # 4. Configure OCI Registry Quadlet (For Image Layers)
 echo "Configuring OCI Registry Quadlet..."
@@ -67,7 +72,7 @@ RELEASE_JSON=$(curl -s "$API_URL")
 RPM_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 RPM_NAME=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .name' | head -n 1)
 curl -sL -o "$RPM_NAME" "$RPM_URL"
-sudo dnf install -y ./"$RPM_NAME"
+sudo zypper --non-interactive --no-gpg-checks install ./"$RPM_NAME"
 
 # 7. Configure CoreDHCP for Island Interface
 echo "Configuring CoreDHCP..."
@@ -105,9 +110,9 @@ sudo systemctl start openchami.target
 
 # 10. Install ochami CLI
 echo "Installing ochami CLI..."
-CLI_URL=$(curl -s https://api.github.com/repos/OpenCHAMI/ochami/releases/latest | jq -r '.assets[] | select(.name | endswith("amd64.rpm")) | .browser_download_url')
+CLI_URL=$(curl -s https://api.github.com/repos/OpenCHAMI/ochami/releases/latest | jq -r '.assets[] | select(.name | endswith("amd64.rpm") or endswith("x86_64.rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${CLI_URL}" -o ochami.rpm
-sudo dnf install -y ./ochami.rpm
+sudo zypper --non-interactive --no-gpg-checks install ./ochami.rpm
 
 # 11. Configure CLI Access
 sudo ochami config cluster set --system --default island cluster.uri https://${CLUSTER_DOMAIN}:8443
