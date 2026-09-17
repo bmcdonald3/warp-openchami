@@ -1,158 +1,120 @@
 #!/bin/bash
-# deploy_openchami_island.sh
+set -e
 
-echo "[1/4] Detecting OS and installing prerequisites..."
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    case "$ID" in
-        ubuntu|debian) apt-get update && apt-get install -y podman jq ;;
-        fedora|rhel|centos|rocky|almalinux) dnf install -y podman jq ;;
-        opensuse*|sles) zypper install -y podman jq ;;
-        alpine) apk add podman jq ;;
-        arch) pacman -Sy --noconfirm podman jq ;;
-        sles|suse) zypper install -y podman jq ;;
-        *) 
-            echo "Unrecognized OS: $ID. Attempting to proceed assuming podman and jq are already installed." 
-            ;;
-    esac
-else
-    echo "Could not read /etc/os-release. Attempting to proceed assuming podman and jq are already installed."
+# ==========================================
+# OpenCHAMI Island Bootstrap Script
+# ==========================================
+
+# Variables - Modify these to match your hardware environment
+ISLAND_INTERFACE="enp2s0"               # Interface facing the compute nodes
+HEAD_NODE_IP="172.16.0.254"             # IP of the head node on the island network
+CLUSTER_DOMAIN="island.openchami.local" # FQDN for the island services
+DHCP_START_IP="172.16.0.200"
+DHCP_END_IP="172.16.0.250"
+OCI_DATA_DIR="/data/oci"
+
+echo "Configuring environment for ${CLUSTER_DOMAIN} on ${ISLAND_INTERFACE} (${HEAD_NODE_IP})..."
+
+# 1. Update Hosts File for Certificate Trust
+if ! grep -q "${CLUSTER_DOMAIN}" /etc/hosts; then
+    echo "${HEAD_NODE_IP} ${CLUSTER_DOMAIN}" | sudo tee -a /etc/hosts > /dev/null
 fi
 
-echo "[2/4] Generating systemd Quadlet configuration files..."
-mkdir -p /etc/containers/systemd/
+# 2. Setup Storage Directories
+sudo mkdir -p ${OCI_DATA_DIR}
+sudo chown -R $USER: ${OCI_DATA_DIR}
 
-cat <<EOF > /etc/containers/systemd/openchami.network
-[Network]
-NetworkName=openchami
-EOF
+# 3. Install VersityGW (S3 Dependency for Boot Images)
+echo "Installing Versity S3 Gateway..."
+LATEST_VERSITY_URL=$(curl -s https://api.github.com/repos/openchami/versitygw-quadlet/releases/latest | jq -r '.assets[] | select(.name | endswith("'"$(rpm --eval '%dist')"'.noarch.rpm")) | .browser_download_url')
+curl -sL "${LATEST_VERSITY_URL}" -o versitygw.rpm
+sudo dnf install -y ./versitygw.rpm
 
-cat <<EOF > /etc/containers/systemd/ochami-postgres.container
+# 4. Configure OCI Registry Quadlet (For Image Layers)
+echo "Configuring OCI Registry Quadlet..."
+sudo tee /etc/containers/systemd/registry.container > /dev/null << EOF
 [Unit]
-Description=OpenCHAMI PostgreSQL Database
+Description=Image OCI Registry
+After=network-online.target
+Requires=network-online.target
 
 [Container]
-Image=docker.io/postgres:15-alpine
-Network=openchami.network
-Environment=POSTGRES_USER=admin
-Environment=POSTGRES_PASSWORD=openchami_db_pass
-Environment=POSTGRES_DB=openchami
-Volume=ochami-pgdata:/var/lib/postgresql/data
+ContainerName=registry
+HostName=registry
+Image=docker.io/library/registry:latest
+Volume=${OCI_DATA_DIR}:/var/lib/registry:Z
+PublishPort=5000:5000
+
+[Service]
+TimeoutStartSec=0
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat <<EOF > /etc/containers/systemd/ochami-tokensmith.container
-[Unit]
-Description=OpenCHAMI TokenSmith (Auth)
-After=ochami-postgres.service
+# 5. Start Dependencies
+sudo systemctl daemon-reload
+sudo systemctl enable --now registry.service
+sudo systemctl enable --now versitygw-gensecrets.service
+sudo systemctl start versitygw.service
+sudo systemctl enable --now versitygw-bootstrap.service
 
-[Container]
-Image=ghcr.io/openchami/tokensmith:latest
-Network=openchami.network
-PublishPort=8080:8080
-Environment=DB_URI=postgres://admin:openchami_db_pass@ochami-postgres:5432/openchami?sslmode=disable
+# 6. Install OpenCHAMI Services (Release RPM)
+echo "Installing OpenCHAMI Release RPM..."
+API_URL="https://api.github.com/repos/openchami/release/releases/latest"
+RELEASE_JSON=$(curl -s "$API_URL")
+RPM_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
+RPM_NAME=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .name' | head -n 1)
+curl -sL -o "$RPM_NAME" "$RPM_URL"
+sudo dnf install -y ./"$RPM_NAME"
 
-[Install]
-WantedBy=multi-user.target
+# 7. Configure CoreDHCP for Island Interface
+echo "Configuring CoreDHCP..."
+cat << EOF | sudo tee /etc/openchami/configs/coredhcp.yaml > /dev/null
+server4:
+  listen:
+    - "%${ISLAND_INTERFACE}"
+  plugins:
+    - server_id: ${HEAD_NODE_IP}
+    - dns: ${HEAD_NODE_IP}
+    - router: ${HEAD_NODE_IP}
+    - netmask: 255.255.255.0
+    - coresmd: |
+        svc_base_uri=https://${CLUSTER_DOMAIN}:8443
+        ipxe_uri=http://${HEAD_NODE_IP}:8081/boot-service/bootscript
+        ca_cert=/root_ca/root_ca.crt
+        cache_valid=30s
+        lease_time=1h
+        single_port=false
+    - bootloop: |
+        lease_file=/tmp/coredhcp.db
+        script_path=default
+        lease_time=5m
+        ipv4_start=${DHCP_START_IP}
+        ipv4_end=${DHCP_END_IP}
 EOF
 
-cat <<EOF > /etc/containers/systemd/ochami-smd.container
-[Unit]
-Description=OpenCHAMI SMD
-After=ochami-tokensmith.service
+# 8. Configure Certificates
+echo "Configuring Certificates for ${CLUSTER_DOMAIN}..."
+sudo openchami-certificate-update update ${CLUSTER_DOMAIN}
 
-[Container]
-Image=ghcr.io/openchami/smd:latest
-Network=openchami.network
-PublishPort=27779:27779
-Environment=POSTGRES_HOST=ochami-postgres
-Environment=POSTGRES_PORT=5432
-Environment=POSTGRES_USER=admin
-Environment=POSTGRES_PASSWORD=openchami_db_pass
-Environment=POSTGRES_DB=openchami
+# 9. Start OpenCHAMI Services
+echo "Starting OpenCHAMI systemd target..."
+sudo systemctl start openchami.target
 
-[Install]
-WantedBy=multi-user.target
-EOF
+# 10. Install ochami CLI
+echo "Installing ochami CLI..."
+CLI_URL=$(curl -s https://api.github.com/repos/OpenCHAMI/ochami/releases/latest | jq -r '.assets[] | select(.name | endswith("amd64.rpm")) | .browser_download_url')
+curl -sL "${CLI_URL}" -o ochami.rpm
+sudo dnf install -y ./ochami.rpm
 
-cat <<EOF > /etc/containers/systemd/ochami-pcs.container
-[Unit]
-Description=OpenCHAMI PCS
-After=ochami-tokensmith.service
+# 11. Configure CLI Access
+sudo ochami config cluster set --system --default island cluster.uri https://${CLUSTER_DOMAIN}:8443
+sudo ochami config --system cluster set island boot-service.uri: /boot-service
 
-[Container]
-Image=ghcr.io/openchami/pcs:latest
-Network=openchami.network
-PublishPort=28000:28000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat <<EOF > /etc/containers/systemd/ochami-boot-service.container
-[Unit]
-Description=OpenCHAMI Boot Service
-After=ochami-smd.service ochami-tokensmith.service
-
-[Container]
-Image=ghcr.io/openchami/boot-service:latest
-Network=openchami.network
-PublishPort=27778:27778
-Exec=serve --port 27778 --enable-auth --hsm-url http://ochami-smd:27779 --tokensmith_url http://ochami-tokensmith:8080
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat <<EOF > /etc/containers/systemd/ochami-metadata-service.container
-[Unit]
-Description=OpenCHAMI Metadata Service
-After=ochami-smd.service ochami-tokensmith.service
-
-[Container]
-Image=ghcr.io/openchami/metadata-service:latest
-Network=openchami.network
-PublishPort=8888:8888
-Environment=SMD_URL=http://ochami-smd:27779
-Environment=TOKENSMITH_URL=http://ochami-tokensmith:8080
-Exec=serve --port 8888
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-echo "[3/4] Pre-pulling container images to display progress..."
-IMAGES=(
-    "docker.io/postgres:15-alpine"
-    "ghcr.io/openchami/tokensmith:latest"
-    "ghcr.io/openchami/smd:latest"
-    "ghcr.io/openchami/pcs:latest"
-    "ghcr.io/openchami/boot-service:latest"
-    "ghcr.io/openchami/metadata-service:latest"
-)
-
-for image in "${IMAGES[@]}"; do
-    echo "Pulling $image..."
-    podman pull "$image"
-done
-
-echo "[4/4] Reloading systemd and starting services..."
-systemctl daemon-reload
-
-SERVICES=(
-    "ochami-postgres.service"
-    "ochami-tokensmith.service"
-    "ochami-smd.service"
-    "ochami-pcs.service"
-    "ochami-boot-service.service"
-    "ochami-metadata-service.service"
-)
-
-for service in "${SERVICES[@]}"; do
-    echo "Starting $service..."
-    systemctl start "$service"
-done
-
-echo "OpenCHAMI deployment script finished."
+echo "=========================================="
+echo "Deployment Complete."
+echo "Wait 30-60 seconds for containers to initialize."
+echo "Check status with: systemctl list-dependencies openchami.target"
+echo "=========================================="
