@@ -1,42 +1,42 @@
 #!/bin/bash
 set -e
 
-# ==========================================
-# OpenCHAMI Island Bootstrap Script (SLES 15 SP6)
-# ==========================================
-
-# Variables - Modify these to match your hardware environment
-ISLAND_INTERFACE="enp2s0"               # Interface facing the compute nodes
-HEAD_NODE_IP="172.16.0.254"             # IP of the head node on the island network
-CLUSTER_DOMAIN="island.openchami.local" # FQDN for the island services
+ISLAND_INTERFACE="enp2s0"
+HEAD_NODE_IP="172.16.0.254"
+CLUSTER_DOMAIN="island.openchami.local"
 DHCP_START_IP="172.16.0.200"
 DHCP_END_IP="172.16.0.250"
 OCI_DATA_DIR="/data/oci"
 
 echo "Configuring environment for ${CLUSTER_DOMAIN} on ${ISLAND_INTERFACE} (${HEAD_NODE_IP})..."
 
-# 0. Install foundational requirements for SLES
-echo "Installing prerequisites (podman, jq, curl)..."
-sudo zypper --non-interactive install podman jq curl
+# Step 0: Install AWS CLI v2 standalone on SLES
+echo "Installing AWS CLI v2..."
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip
+sudo ./aws/install --update
+rm -rf aws awscliv2.zip
+# Verification: Run 'aws --version' to confirm the CLI is operational.
 
-# 1. Update Hosts File for Certificate Trust
+# Step 1: Update Hosts File for Certificate Trust
 if ! grep -q "${CLUSTER_DOMAIN}" /etc/hosts; then
     echo "${HEAD_NODE_IP} ${CLUSTER_DOMAIN}" | sudo tee -a /etc/hosts > /dev/null
 fi
+# Verification: Run 'getent hosts ${CLUSTER_DOMAIN}' to verify resolution.
 
-# 2. Setup Storage Directories
+# Step 2: Setup Storage Directories
 sudo mkdir -p ${OCI_DATA_DIR}
 sudo chown -R $USER: ${OCI_DATA_DIR}
+# Verification: Run 'ls -ld ${OCI_DATA_DIR}' to verify ownership and existence.
 
-# 3. Install VersityGW (S3 Dependency for Boot Images)
+# Step 3: Install Versity S3 Gateway bypassing missing EL9 dependencies
 echo "Installing Versity S3 Gateway..."
-# Fetch the generic/EL9 rpm by removing the dist check
 LATEST_VERSITY_URL=$(curl -s https://api.github.com/repos/openchami/versitygw-quadlet/releases/latest | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${LATEST_VERSITY_URL}" -o versitygw.rpm
-sudo zypper --non-interactive --no-gpg-checks install ./versitygw.rpm
+sudo rpm -ivh --nodeps ./versitygw.rpm
+# Verification: Run 'rpm -q versitygw-quadlet' to verify package installation.
 
-# 4. Configure OCI Registry Quadlet (For Image Layers)
-echo "Configuring OCI Registry Quadlet..."
+# Step 4: Configure OCI Registry Quadlet
 sudo tee /etc/containers/systemd/registry.container > /dev/null << EOF
 [Unit]
 Description=Image OCI Registry
@@ -57,25 +57,27 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+# Verification: Run 'test -f /etc/containers/systemd/registry.container' to confirm file creation.
 
-# 5. Start Dependencies
+# Step 5: Start Dependencies
 sudo systemctl daemon-reload
 sudo systemctl enable --now registry.service
 sudo systemctl enable --now versitygw-gensecrets.service
 sudo systemctl start versitygw.service
 sudo systemctl enable --now versitygw-bootstrap.service
+# Verification: Run 'systemctl is-active registry versitygw' to confirm both services are active.
 
-# 6. Install OpenCHAMI Services (Release RPM)
+# Step 6: Install OpenCHAMI Services Release RPM
 echo "Installing OpenCHAMI Release RPM..."
 API_URL="https://api.github.com/repos/openchami/release/releases/latest"
 RELEASE_JSON=$(curl -s "$API_URL")
 RPM_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 RPM_NAME=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .name' | head -n 1)
 curl -sL -o "$RPM_NAME" "$RPM_URL"
-sudo zypper --non-interactive --no-gpg-checks install ./"$RPM_NAME"
+sudo rpm -ivh --nodeps ./"$RPM_NAME"
+# Verification: Run 'ls /etc/openchami/configs/' to confirm configuration files were unpacked.
 
-# 7. Configure CoreDHCP for Island Interface
-echo "Configuring CoreDHCP..."
+# Step 7: Configure CoreDHCP for Island Interface
 cat << EOF | sudo tee /etc/openchami/configs/coredhcp.yaml > /dev/null
 server4:
   listen:
@@ -99,27 +101,25 @@ server4:
         ipv4_start=${DHCP_START_IP}
         ipv4_end=${DHCP_END_IP}
 EOF
+# Verification: Run 'grep "${ISLAND_INTERFACE}" /etc/openchami/configs/coredhcp.yaml' to check interface binding.
 
-# 8. Configure Certificates
-echo "Configuring Certificates for ${CLUSTER_DOMAIN}..."
+# Step 8: Configure Certificates
 sudo openchami-certificate-update update ${CLUSTER_DOMAIN}
+# Verification: Run 'openssl x509 -in /root_ca/root_ca.crt -text -noout' to confirm CA generation.
 
-# 9. Start OpenCHAMI Services
-echo "Starting OpenCHAMI systemd target..."
+# Step 9: Start OpenCHAMI Services
 sudo systemctl start openchami.target
+# Verification: Run 'systemctl is-active openchami.target' to confirm the target started successfully.
 
-# 10. Install ochami CLI
-echo "Installing ochami CLI..."
+# Step 10: Install ochami CLI
 CLI_URL=$(curl -s https://api.github.com/repos/OpenCHAMI/ochami/releases/latest | jq -r '.assets[] | select(.name | endswith("amd64.rpm") or endswith("x86_64.rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${CLI_URL}" -o ochami.rpm
-sudo zypper --non-interactive --no-gpg-checks install ./ochami.rpm
+sudo rpm -ivh --nodeps ./ochami.rpm
+# Verification: Run 'ochami version' to confirm the binary executes correctly.
 
-# 11. Configure CLI Access
+# Step 11: Configure CLI Access
 sudo ochami config cluster set --system --default island cluster.uri https://${CLUSTER_DOMAIN}:8443
 sudo ochami config --system cluster set island boot-service.uri: /boot-service
+# Verification: Run 'ochami config show' to verify the cluster endpoint mapping.
 
-echo "=========================================="
 echo "Deployment Complete."
-echo "Wait 30-60 seconds for containers to initialize."
-echo "Check status with: systemctl list-dependencies openchami.target"
-echo "=========================================="
