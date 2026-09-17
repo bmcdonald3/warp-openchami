@@ -33,7 +33,7 @@ sudo chown -R $USER: ${OCI_DATA_DIR}
 echo "Installing Versity S3 Gateway..."
 LATEST_VERSITY_URL=$(curl -s https://api.github.com/repos/openchami/versitygw-quadlet/releases/latest | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${LATEST_VERSITY_URL}" -o versitygw.rpm
-sudo rpm -ivh --nodeps ./versitygw.rpm
+sudo rpm -Uvh --nodeps ./versitygw.rpm
 # Verification: Run 'rpm -q versitygw-quadlet' to verify package installation.
 
 # Step 4: Configure OCI Registry Quadlet
@@ -74,7 +74,7 @@ RELEASE_JSON=$(curl -s "$API_URL")
 RPM_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
 RPM_NAME=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".rpm")) | .name' | head -n 1)
 curl -sL -o "$RPM_NAME" "$RPM_URL"
-sudo rpm -ivh --nodeps ./"$RPM_NAME"
+sudo rpm -Uvh --nodeps ./"$RPM_NAME"
 # Verification: Run 'ls /etc/openchami/configs/' to confirm configuration files were unpacked.
 
 # Step 7: Configure CoreDHCP for Island Interface
@@ -114,7 +114,7 @@ sudo systemctl start openchami.target
 # Step 10: Install ochami CLI
 CLI_URL=$(curl -s https://api.github.com/repos/OpenCHAMI/ochami/releases/latest | jq -r '.assets[] | select(.name | endswith("amd64.rpm") or endswith("x86_64.rpm")) | .browser_download_url' | head -n 1)
 curl -sL "${CLI_URL}" -o ochami.rpm
-sudo rpm -ivh --nodeps ./ochami.rpm
+sudo rpm -Uvh --nodeps ./ochami.rpm
 # Verification: Run 'ochami version' to confirm the binary executes correctly.
 
 # Step 11: Configure CLI Access
