@@ -1,17 +1,32 @@
 #!/bin/bash
 # deploy_openchami_island.sh
 
-apt-get update && apt-get install -y podman jq
+echo "[1/4] Detecting OS and installing prerequisites..."
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "$ID" in
+        ubuntu|debian) apt-get update && apt-get install -y podman jq ;;
+        fedora|rhel|centos|rocky|almalinux) dnf install -y podman jq ;;
+        opensuse*|sles) zypper install -y podman jq ;;
+        alpine) apk add podman jq ;;
+        arch) pacman -Sy --noconfirm podman jq ;;
+        sles|suse) zypper install -y podman jq ;;
+        *) 
+            echo "Unrecognized OS: $ID. Attempting to proceed assuming podman and jq are already installed." 
+            ;;
+    esac
+else
+    echo "Could not read /etc/os-release. Attempting to proceed assuming podman and jq are already installed."
+fi
 
+echo "[2/4] Generating systemd Quadlet configuration files..."
 mkdir -p /etc/containers/systemd/
 
-# 1. Create the shared container network
 cat <<EOF > /etc/containers/systemd/openchami.network
 [Network]
 NetworkName=openchami
 EOF
 
-# 2. Create the Database Dependency (PostgreSQL)
 cat <<EOF > /etc/containers/systemd/ochami-postgres.container
 [Unit]
 Description=OpenCHAMI PostgreSQL Database
@@ -28,7 +43,6 @@ Volume=ochami-pgdata:/var/lib/postgresql/data
 WantedBy=multi-user.target
 EOF
 
-# 3. Create TokenSmith (Authentication)
 cat <<EOF > /etc/containers/systemd/ochami-tokensmith.container
 [Unit]
 Description=OpenCHAMI TokenSmith (Auth)
@@ -44,7 +58,6 @@ Environment=DB_URI=postgres://admin:openchami_db_pass@ochami-postgres:5432/openc
 WantedBy=multi-user.target
 EOF
 
-# 4. Create State Management Database (SMD)
 cat <<EOF > /etc/containers/systemd/ochami-smd.container
 [Unit]
 Description=OpenCHAMI SMD
@@ -64,7 +77,6 @@ Environment=POSTGRES_DB=openchami
 WantedBy=multi-user.target
 EOF
 
-# 5. Create Power Control Service (PCS)
 cat <<EOF > /etc/containers/systemd/ochami-pcs.container
 [Unit]
 Description=OpenCHAMI PCS
@@ -79,7 +91,6 @@ PublishPort=28000:28000
 WantedBy=multi-user.target
 EOF
 
-# 6. Create Boot Service (Modern BSS replacement)
 cat <<EOF > /etc/containers/systemd/ochami-boot-service.container
 [Unit]
 Description=OpenCHAMI Boot Service
@@ -95,7 +106,6 @@ Exec=serve --port 27778 --enable-auth --hsm-url http://ochami-smd:27779 --tokens
 WantedBy=multi-user.target
 EOF
 
-# 7. Create Metadata Service (Modern Cloud-Init replacement)
 cat <<EOF > /etc/containers/systemd/ochami-metadata-service.container
 [Unit]
 Description=OpenCHAMI Metadata Service
@@ -113,11 +123,36 @@ Exec=serve --port 8888
 WantedBy=multi-user.target
 EOF
 
-# 8. Reload systemd and start services
+echo "[3/4] Pre-pulling container images to display progress..."
+IMAGES=(
+    "docker.io/postgres:15-alpine"
+    "ghcr.io/openchami/tokensmith:latest"
+    "ghcr.io/openchami/smd:latest"
+    "ghcr.io/openchami/pcs:latest"
+    "ghcr.io/openchami/boot-service:latest"
+    "ghcr.io/openchami/metadata-service:latest"
+)
+
+for image in "${IMAGES[@]}"; do
+    echo "Pulling $image..."
+    podman pull "$image"
+done
+
+echo "[4/4] Reloading systemd and starting services..."
 systemctl daemon-reload
-systemctl start ochami-postgres.service
-systemctl start ochami-tokensmith.service
-systemctl start ochami-smd.service
-systemctl start ochami-pcs.service
-systemctl start ochami-boot-service.service
-systemctl start ochami-metadata-service.service
+
+SERVICES=(
+    "ochami-postgres.service"
+    "ochami-tokensmith.service"
+    "ochami-smd.service"
+    "ochami-pcs.service"
+    "ochami-boot-service.service"
+    "ochami-metadata-service.service"
+)
+
+for service in "${SERVICES[@]}"; do
+    echo "Starting $service..."
+    systemctl start "$service"
+done
+
+echo "OpenCHAMI deployment script finished."
